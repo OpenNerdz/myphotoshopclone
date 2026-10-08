@@ -1,7 +1,7 @@
 // Properties panel: layer appearance, transform, adjustments and canvas settings.
 
-import { $, $$, h, settings } from './dom.js';
-import { FILTER_DEFS, PRESETS, presetFilters, filtersEqual, defaultFilters, cssFilter, blurRadius, BLEND_MODES } from './filters.js';
+import { $, $$, h, icon, settings } from './dom.js';
+import { FILTER_DEFS, PRESETS, presetFilters, filterKey, defaultFilters, cssFilter, blurRadius, BLEND_MODES } from './filters.js';
 import { layerBounds, layerSize, normalizeAngle } from './geometry.js';
 import { sliderRow, numberField, segmented } from './controls.js';
 
@@ -83,26 +83,14 @@ export class PropertiesPanel {
         const grid = $('#transformFields');
         const commitKey = (what) => `${what}:${this.layer && this.layer.id}`;
 
-        this.fx = numberField({
-            label: 'X',
-            title: 'X position (left edge)',
-            unit: 'px',
-            onChange: (v, commit) => {
-                const l = this.layer;
-                if (!l) return;
-                app.updateLayer(l.id, { x: l.x + (v - layerBounds(l).x) }, commit ? { commit: 'Move layer', key: commitKey('pos') } : {});
-            }
-        });
-        this.fy = numberField({
-            label: 'Y',
-            title: 'Y position (top edge)',
-            unit: 'px',
-            onChange: (v, commit) => {
-                const l = this.layer;
-                if (!l) return;
-                app.updateLayer(l.id, { y: l.y + (v - layerBounds(l).y) }, commit ? { commit: 'Move layer', key: commitKey('pos') } : {});
-            }
-        });
+        // X / Y show the bounding box's top-left corner; the layer itself is positioned by its centre.
+        const move = (axis) => (v, commit) => {
+            const l = this.layer;
+            if (!l) return;
+            app.updateLayer(l.id, { [axis]: l[axis] + (v - layerBounds(l)[axis]) }, commit ? { commit: 'Move layer', key: commitKey('pos') } : {});
+        };
+        this.fx = numberField({ label: 'X', title: 'X position (left edge)', unit: 'px', onChange: move('x') });
+        this.fy = numberField({ label: 'Y', title: 'Y position (top edge)', unit: 'px', onChange: move('y') });
         const resize = (axis) => (v, commit) => {
             const l = this.layer;
             if (!l || v <= 0) return;
@@ -138,6 +126,7 @@ export class PropertiesPanel {
         });
         $('#rotationRow').append(this.rotation.el);
 
+        this.flipButtons = $$('[data-transform="flip-h"], [data-transform="flip-v"]');
         for (const btn of $$('[data-transform]')) {
             btn.addEventListener('click', () => {
                 const l = this.layer;
@@ -165,10 +154,7 @@ export class PropertiesPanel {
     }
 
     makeLinkButton(label, onClick) {
-        const btn = h('button', { type: 'button', class: 'link-btn', title: label, 'aria-label': label });
-        btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>';
-        btn.addEventListener('click', onClick);
-        return btn;
+        return h('button', { type: 'button', class: 'link-btn', title: label, 'aria-label': label, onclick: onClick }, icon('link'));
     }
 
     syncLink(btn, on) {
@@ -179,8 +165,12 @@ export class PropertiesPanel {
     buildAdjustments() {
         const app = this.app;
         const presets = $('#presets');
+        // Preset thumbnails are previewed with CSS filters, which only depend on the preset.
         this.presetButtons = PRESETS.map((p) => {
+            const filters = presetFilters(p);
+            const css = cssFilter(filters, blurRadius(filters, 48));
             const img = h('img', { alt: '', draggable: 'false', decoding: 'async' });
+            if (css !== 'none') img.style.filter = css;
             const btn = h(
                 'button',
                 { type: 'button', class: 'preset', 'aria-pressed': 'false', dataset: { id: p.id } },
@@ -191,7 +181,7 @@ export class PropertiesPanel {
                 if (this.layer) app.updateLayer(this.layer.id, { filters: presetFilters(p) }, { commit: `${p.name} preset` });
             });
             presets.append(btn);
-            return { preset: p, btn, img };
+            return { key: filterKey(filters), btn, img };
         });
 
         const rows = $('#adjustRows');
@@ -302,7 +292,7 @@ export class PropertiesPanel {
         this.fw.set(Math.round(w));
         this.fh.set(Math.round(hh));
         this.rotation.set(Math.round(l.rotation * 10) / 10);
-        for (const btn of $$('[data-transform="flip-h"], [data-transform="flip-v"]')) {
+        for (const btn of this.flipButtons) {
             btn.setAttribute('aria-pressed', String(btn.dataset.transform === 'flip-h' ? l.flipH : l.flipV));
         }
 
@@ -310,12 +300,10 @@ export class PropertiesPanel {
 
         const asset = this.app.assets.get(l.assetId);
         const thumb = asset ? asset.thumb : '';
-        for (const { preset, btn, img } of this.presetButtons) {
+        const fk = filterKey(l.filters);
+        for (const { key, btn, img } of this.presetButtons) {
             if (img.getAttribute('src') !== thumb) img.src = thumb;
-            const pf = presetFilters(preset);
-            const f = cssFilter(pf, blurRadius(pf, 48));
-            img.style.filter = f === 'none' ? '' : f;
-            btn.setAttribute('aria-pressed', String(filtersEqual(l.filters, pf)));
+            btn.setAttribute('aria-pressed', String(key === fk));
         }
     }
 

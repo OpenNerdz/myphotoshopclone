@@ -13,8 +13,8 @@
 
 import { isIdentity, filterKey } from './filters.js';
 import { buildFiltered, drawLayer } from './compositor.js';
-import { assetLevels, levelImage } from './images.js';
-import { toSourcePixel, intersectRect } from './geometry.js';
+import { assetLevels, levelImage, createCanvas } from './images.js';
+import { toSourcePixel, intersectRect, containsRect, layerExtent } from './geometry.js';
 
 const CHECKER_A = '#3b404b';
 const CHECKER_B = '#2f333c';
@@ -81,8 +81,7 @@ export class Renderer {
     checker() {
         if (this.pattern && this.patternDpr === this.dpr) return this.pattern;
         const cell = Math.round(8 * this.dpr);
-        const c = document.createElement('canvas');
-        c.width = c.height = cell * 2;
+        const c = createCanvas(cell * 2, cell * 2);
         const x = c.getContext('2d');
         x.fillStyle = CHECKER_A;
         x.fillRect(0, 0, cell * 2, cell * 2);
@@ -131,8 +130,7 @@ export class Renderer {
     drawable(layer, asset, screenScale) {
         const app = this.app;
         const levels = assetLevels(asset);
-        const need = Math.max(Math.abs(layer.width * layer.scaleX), Math.abs(layer.height * layer.scaleY)) * screenScale;
-        let li = this.levelFor(levels, need);
+        let li = this.levelFor(levels, layerExtent(layer) * screenScale);
 
         if (isIdentity(layer.filters)) {
             if (this.caches.has(layer.id) || this.fallbacks.has(layer.id)) this.drop(layer.id); // free memory
@@ -168,9 +166,7 @@ export class Renderer {
 
         if (cached && cached.fk === fk && cached.li === li && !cached.region && cached.assetId === asset.id) return cached;
         const L = levels[li];
-        const built = buildFiltered(levelImage(L), L.w, L.h, layer.filters, cached ? cached.img : null);
-        if (cached && cached.img !== built.canvas) cached.img.width = 0;
-        const entry = { fk, li, assetId: asset.id, img: built.canvas, cw: L.w, ch: L.h, pad: built.pad, region: null };
+        const entry = this.filtered(layer, asset, fk, li, levelImage(L), L.w, L.h, cached);
         this.caches.set(layer.id, entry);
         const fb = this.fallbacks.get(layer.id);
         if (fb) {
@@ -180,11 +176,16 @@ export class Renderer {
         return entry;
     }
 
+    /** Filter `src` (cw × ch, optionally only `region`), recycling `prev`'s canvas. */
+    filtered(layer, asset, fk, li, src, cw, ch, prev, region = null) {
+        const built = buildFiltered(src, cw, ch, layer.filters, prev ? prev.img : null, region);
+        if (prev && prev.img !== built.canvas) prev.img.width = 0;
+        return { fk, li, assetId: asset.id, img: built.canvas, cw, ch, pad: built.pad, region };
+    }
+
     tileCovers(tile, layer) {
         const vis = this.visibleSourceRect(layer);
-        if (!vis) return true;
-        const r = tile.region;
-        return vis.x >= r.x && vis.y >= r.y && vis.x + vis.w <= r.x + r.w && vis.y + vis.h <= r.y + r.h;
+        return !vis || containsRect(tile.region, vis);
     }
 
     /** Filtered 2048px preview, kept alongside a tile to cover fast pans. */
@@ -193,9 +194,7 @@ export class Renderer {
         const L = levels[Math.min(1, levels.length - 1)];
         let p = this.fallbacks.get(layer.id);
         if (!p || p.fk !== fk || p.assetId !== asset.id) {
-            const built = buildFiltered(levelImage(L), L.w, L.h, layer.filters, p ? p.img : null);
-            if (p && p.img !== built.canvas) p.img.width = 0;
-            p = { fk, li: 1, assetId: asset.id, img: built.canvas, cw: L.w, ch: L.h, pad: built.pad, region: null };
+            p = this.filtered(layer, asset, fk, 1, levelImage(L), L.w, L.h, p);
             this.fallbacks.set(layer.id, p);
         }
         return p;
@@ -207,9 +206,8 @@ export class Renderer {
         if (!vis) {
             return { img: asset.proxy, cw: asset.proxyW, ch: asset.proxyH, pad: 0, region: { x: 0, y: 0, w: 0, h: 0 }, empty: true };
         }
-        if (cached && cached.fk === fk && cached.li === 0 && cached.assetId === asset.id && cached.region) {
-            const r = cached.region;
-            if (vis.x >= r.x && vis.y >= r.y && vis.x + vis.w <= r.x + r.w && vis.y + vis.h <= r.y + r.h) return cached;
+        if (cached && cached.fk === fk && cached.li === 0 && cached.assetId === asset.id && cached.region && containsRect(cached.region, vis)) {
+            return cached;
         }
         // Grow the tile so small pans don't force a rebuild, snapped to a coarse grid.
         const mx = vis.w * 0.3;
@@ -221,9 +219,7 @@ export class Renderer {
         const y1 = Math.min(asset.height, Math.ceil((vis.y + vis.h + my) / G) * G);
         const region = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
         if (region.w * region.h > MAX_TILE_AREA) return null;
-        const built = buildFiltered(asset.source, asset.width, asset.height, layer.filters, cached ? cached.img : null, region);
-        if (cached && cached.img !== built.canvas) cached.img.width = 0;
-        const entry = { fk, li: 0, assetId: asset.id, img: built.canvas, cw: asset.width, ch: asset.height, pad: built.pad, region };
+        const entry = this.filtered(layer, asset, fk, 0, asset.source, asset.width, asset.height, cached, region);
         this.caches.set(layer.id, entry);
         return entry;
     }

@@ -1,7 +1,7 @@
 // App chrome: top bar, menu, file intake (picker, drop, paste), keyboard
 // shortcuts, zoom bar, resizable side panel and the phone bottom sheet.
 
-import { $, $$, isTypingTarget, modKey, settings, isMac } from './dom.js';
+import { $, $$, isTypingTarget, modKey, settings, isMac, trackPointer } from './dom.js';
 import { clamp } from './geometry.js';
 import { openShortcuts } from './dialogs.js';
 import { toast } from './toast.js';
@@ -69,7 +69,6 @@ export class Shell {
         $('#emptyState').hidden = has;
         $('#zoomBar').hidden = !has;
         $('#exportBtn').disabled = !has;
-        for (const b of $$('[data-requires-layers]')) b.disabled = !has;
         this.syncNav();
     }
 
@@ -382,8 +381,11 @@ export class Shell {
     }
 
     syncZoom() {
+        // Runs on every pan frame; only touch the DOM when the label changes.
         const s = this.app.view.scale * 100;
-        $('#zoomValue').textContent = `${s < 10 ? s.toFixed(1) : Math.round(s)}%`;
+        const text = `${s < 10 ? s.toFixed(1) : Math.round(s)}%`;
+        const el = $('#zoomValue');
+        if (el.textContent !== text) el.textContent = text;
     }
 
     // -------------------------------------------------- desktop side panel
@@ -406,21 +408,16 @@ export class Shell {
             e.preventDefault();
             const startX = e.clientX;
             const startW = this.panel.getBoundingClientRect().width;
-            handle.setPointerCapture(e.pointerId);
             handle.classList.add('active');
             document.body.classList.add('is-resizing');
-            const move = (ev) => setWidth(startW - (ev.clientX - startX));
-            const up = () => {
-                handle.removeEventListener('pointermove', move);
-                handle.removeEventListener('pointerup', up);
-                handle.removeEventListener('pointercancel', up);
-                handle.classList.remove('active');
-                document.body.classList.remove('is-resizing');
-                setWidth(this.panel.getBoundingClientRect().width, true);
-            };
-            handle.addEventListener('pointermove', move);
-            handle.addEventListener('pointerup', up);
-            handle.addEventListener('pointercancel', up);
+            trackPointer(handle, e.pointerId, {
+                move: (ev) => setWidth(startW - (ev.clientX - startX)),
+                end: () => {
+                    handle.classList.remove('active');
+                    document.body.classList.remove('is-resizing');
+                    setWidth(this.panel.getBoundingClientRect().width, true);
+                }
+            });
         });
         handle.addEventListener('dblclick', () => setWidth(PANEL_DEFAULT, true));
         handle.addEventListener('keydown', (e) => {
@@ -461,8 +458,9 @@ export class Shell {
         onQuery();
 
         // Keep the canvas framed above the sheet as it resizes.
-        new ResizeObserver(() => this.updateInsets()).observe(this.panel);
-        new ResizeObserver(() => this.updateInsets()).observe($('#cropBar'));
+        const insetsObserver = new ResizeObserver(() => this.updateInsets());
+        insetsObserver.observe(this.panel);
+        insetsObserver.observe($('#cropBar'));
 
         // Drag the grabber to resize; drag far enough down to close.
         const grabber = $('#sheetGrabber');
@@ -472,28 +470,23 @@ export class Shell {
             const startY = e.clientY;
             const startH = this.panel.getBoundingClientRect().height;
             const maxH = window.innerHeight * 0.85;
-            grabber.setPointerCapture(e.pointerId);
             this.panel.classList.add('dragging');
             let h = startH;
-            const move = (ev) => {
-                h = clamp(startH - (ev.clientY - startY), 0, maxH);
-                this.panel.style.height = `${h}px`;
-            };
-            const up = () => {
-                grabber.removeEventListener('pointermove', move);
-                grabber.removeEventListener('pointerup', up);
-                grabber.removeEventListener('pointercancel', up);
-                this.panel.classList.remove('dragging');
-                if (h < 150) {
-                    this.closeSheet();
-                    this.panel.style.removeProperty('height');
-                } else {
-                    this.panel.style.height = `${Math.max(220, h)}px`;
+            trackPointer(grabber, e.pointerId, {
+                move: (ev) => {
+                    h = clamp(startH - (ev.clientY - startY), 0, maxH);
+                    this.panel.style.height = `${h}px`;
+                },
+                end: () => {
+                    this.panel.classList.remove('dragging');
+                    if (h < 150) {
+                        this.closeSheet();
+                        this.panel.style.removeProperty('height');
+                    } else {
+                        this.panel.style.height = `${Math.max(220, h)}px`;
+                    }
                 }
-            };
-            grabber.addEventListener('pointermove', move);
-            grabber.addEventListener('pointerup', up);
-            grabber.addEventListener('pointercancel', up);
+            });
         });
     }
 

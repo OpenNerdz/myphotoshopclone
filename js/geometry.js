@@ -5,11 +5,6 @@ export const DEG = Math.PI / 180;
 
 export const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-export const roundTo = (v, places = 0) => {
-    const m = 10 ** places;
-    return Math.round(v * m) / m;
-};
-
 /** Normalise an angle in degrees to the range (-180, 180]. */
 export function normalizeAngle(deg) {
     let d = ((((deg + 180) % 360) + 360) % 360) - 180;
@@ -23,6 +18,12 @@ export function layerSize(layer) {
         w: layer.width * layer.scaleX,
         h: layer.height * layer.scaleY
     };
+}
+
+/** Longest displayed side of a layer (document px). */
+export function layerExtent(layer) {
+    const { w, h } = layerSize(layer);
+    return Math.max(Math.abs(w), Math.abs(h));
 }
 
 /** The four corners of a layer in document space (clockwise from top-left). */
@@ -109,6 +110,11 @@ export function intersectRect(a, b) {
     const btm = Math.min(a.y + a.h, b.y + b.h);
     if (r <= x || btm <= y) return null;
     return { x, y, w: r - x, h: btm - y };
+}
+
+/** True when `inner` lies entirely within `outer`. */
+export function containsRect(outer, inner) {
+    return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
 }
 
 /** Snap a rect to whole pixels while keeping it at least 1x1. */

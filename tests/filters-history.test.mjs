@@ -6,9 +6,6 @@ import {
     normalizeFilters,
     isIdentity,
     cssFilter,
-    colorMatrix,
-    isIdentityMatrix,
-    applyColorMatrix,
     applyColorSteps,
     colorSteps,
     blurRadius,
@@ -23,7 +20,7 @@ test('defaults are identity', () => {
     const f = defaultFilters();
     assert.ok(isIdentity(f));
     assert.equal(cssFilter(f), 'none');
-    assert.ok(isIdentityMatrix(colorMatrix(f)));
+    assert.deepEqual(colorSteps(f), []);
 });
 
 test('normalizeFilters clamps and fills missing keys', () => {
@@ -46,28 +43,28 @@ test('blur radius scales with image size', () => {
 
 const px = (r, g, b) => new Uint8ClampedArray([r, g, b, 255]);
 
-test('colour matrix: brightness, contrast, invert, grayscale', () => {
+test('colour steps: brightness, contrast, invert, grayscale', () => {
     let d = px(100, 50, 200);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), brightness: 200 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), brightness: 200 }));
     assert.deepEqual([...d.slice(0, 3)], [200, 100, 255]);
 
     d = px(0, 128, 255);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), contrast: 0 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), contrast: 0 }));
     assert.deepEqual([...d.slice(0, 3)], [128, 128, 128]);
 
     d = px(0, 100, 255);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), invert: 100 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), invert: 100 }));
     assert.deepEqual([...d.slice(0, 3)], [255, 155, 0]);
 
     d = px(255, 0, 0);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), grayscale: 100 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), grayscale: 100 }));
     assert.equal(d[0], d[1]);
     assert.equal(d[1], d[2]);
 });
 
 test('hue rotate by 360° is (nearly) identity', () => {
     const d = px(200, 40, 90);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), hue: 360 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), hue: 360 }));
     assert.deepEqual([...d.slice(0, 3)], [200, 40, 90]);
 });
 
@@ -77,14 +74,11 @@ test('steps clamp between functions like CSS filters do', () => {
     applyColorSteps(d, colorSteps(f));
     // brightness: 400→255 (clamped), 200, 0; then contrast ½ around 127.5
     assert.deepEqual([...d.slice(0, 3)], [191, 164, 64]);
-    const composed = px(200, 100, 0);
-    applyColorMatrix(composed, colorMatrix(f));
-    assert.notDeepEqual([...composed.slice(0, 3)], [...d.slice(0, 3)], 'single composed matrix would drift');
 });
 
 test('transparent pixels are skipped by the matrix', () => {
     const d = new Uint8ClampedArray([10, 20, 30, 0]);
-    applyColorMatrix(d, colorMatrix({ ...defaultFilters(), invert: 100 }));
+    applyColorSteps(d, colorSteps({ ...defaultFilters(), invert: 100 }));
     assert.deepEqual([...d], [10, 20, 30, 0]);
 });
 

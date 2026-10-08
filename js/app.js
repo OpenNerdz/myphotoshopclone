@@ -3,7 +3,7 @@
 
 import { History } from './history.js';
 import { Renderer } from './renderer.js';
-import { loadAsset, releaseAsset, mapLimit, isImageFile, stripExtension, MAX_AREA, MAX_SIDE } from './images.js';
+import { loadAsset, releaseAsset, mapLimit, isImageFile, stripExtension, limitScale, MAX_SIDE } from './images.js';
 import { defaultFilters, normalizeFilters, isBlendMode } from './filters.js';
 import { clamp, containScale, coverScale, layerBounds, unionRect, roundRect, normalizeAngle } from './geometry.js';
 import * as storage from './storage.js';
@@ -16,9 +16,12 @@ import { PropertiesPanel } from './properties.js';
 import { ExportDialog, confirmDialog } from './dialogs.js';
 import { Shell } from './shell.js';
 
-export const MAX_ZOOM = 32;
+const MAX_ZOOM = 32;
 const ZOOM_STEPS = [0.02, 0.03, 0.05, 0.0625, 0.0833, 0.125, 0.1667, 0.25, 0.3333, 0.5, 0.6667, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32];
 const DEFAULT_DOC = { width: 1920, height: 1080, background: null, auto: true };
+const AUTOSAVE_LOCK = 'image-overlay-studio:autosave';
+
+const emptyState = () => ({ doc: { ...DEFAULT_DOC }, layers: [], selectedId: null });
 
 const cloneLayer = (l) => ({ ...l, filters: { ...l.filters } });
 const finite = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
@@ -57,7 +60,7 @@ function sanitizeLayer(l, asset) {
 
 export class App {
     constructor() {
-        this.state = { doc: { ...DEFAULT_DOC }, layers: [], selectedId: null };
+        this.state = emptyState();
         this.assets = new Map();
         this.view = { scale: 1, x: 0, y: 0, fitted: true };
         this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -118,15 +121,8 @@ export class App {
         await this.ready;
         document.documentElement.classList.add('app-ready');
 
-        const flush = () => {
-            if (this.persistTimer) {
-                clearTimeout(this.persistTimer);
-                this.persistTimer = 0;
-                this.saveChain = this.saveChain.then(() => this.persistNow());
-            }
-        };
-        document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && flush());
-        window.addEventListener('pagehide', flush);
+        document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && this.flushPersist());
+        window.addEventListener('pagehide', () => this.flushPersist());
     }
 
     // --------------------------------------------------------------- queries
@@ -232,29 +228,24 @@ export class App {
     }
 
     undo() {
-        if (this.crop.active) {
-            this.crop.cancel();
-            return;
-        }
-        // Finishing a drag after undo would commit it and wipe the redo stack.
-        this.viewport.abortGesture();
-        const r = this.history.undo();
-        if (!r) return;
-        this.applySnapshot(r.state);
-        this.emit('history');
-        this.schedulePersist();
-        this.announce(`Undo ${r.label}`);
+        if (this.crop.active) this.crop.cancel();
+        else this.travel('undo');
     }
 
     redo() {
-        if (this.crop.active) return;
+        if (!this.crop.active) this.travel('redo');
+    }
+
+    /** Step through history: `dir` is 'undo' or 'redo'. */
+    travel(dir) {
+        // Finishing a drag after undo would commit it and wipe the redo stack.
         this.viewport.abortGesture();
-        const r = this.history.redo();
+        const r = this.history[dir]();
         if (!r) return;
         this.applySnapshot(r.state);
         this.emit('history');
         this.schedulePersist();
-        this.announce(`Redo ${r.label}`);
+        this.announce(`${dir === 'undo' ? 'Undo' : 'Redo'} ${r.label}`);
     }
 
     /** Release decoded images no longer reachable from the document or history. */
@@ -278,20 +269,18 @@ export class App {
      */
     acquireAutosaveLock() {
         if (this.isWriter) return;
-        const hold = () => new Promise(() => {}); // held until the tab closes
+        const becomeWriter = () => {
+            this.isWriter = true;
+            this.schedulePersist();
+            return new Promise(() => {}); // held until the tab closes
+        };
         navigator.locks
-            .request('image-overlay-studio:autosave', { ifAvailable: true }, (lock) => {
-                if (lock) {
-                    this.isWriter = true;
-                    this.schedulePersist();
-                    return hold();
-                }
+            .request(AUTOSAVE_LOCK, { ifAvailable: true }, (lock) => {
+                if (lock) return becomeWriter();
                 toast('Overlay Studio is open in another tab. Autosave is paused here until that tab closes.', { duration: 8000 });
-                navigator.locks.request('image-overlay-studio:autosave', () => {
-                    this.isWriter = true;
-                    this.schedulePersist();
+                navigator.locks.request(AUTOSAVE_LOCK, () => {
                     toast('Autosave resumed in this tab.', { type: 'success' });
-                    return hold();
+                    return becomeWriter();
                 });
                 return undefined;
             })
@@ -303,10 +292,15 @@ export class App {
     schedulePersist() {
         if (!this.persistEnabled || !this.isWriter || this.restoring) return;
         clearTimeout(this.persistTimer);
-        this.persistTimer = setTimeout(() => {
-            this.persistTimer = 0;
-            this.saveChain = this.saveChain.then(() => this.persistNow());
-        }, 700);
+        this.persistTimer = setTimeout(() => this.flushPersist(), 700);
+    }
+
+    /** Start a scheduled save right away (e.g. when the tab is being hidden). */
+    flushPersist() {
+        if (!this.persistTimer) return;
+        clearTimeout(this.persistTimer);
+        this.persistTimer = 0;
+        this.saveChain = this.saveChain.then(() => this.persistNow());
     }
 
     async persistNow() {
@@ -383,7 +377,7 @@ export class App {
             if (layers.length < savedLayers.length) toast('Some images from your last session could not be restored.', { type: 'error' });
         } catch (err) {
             console.error('Restore failed', err);
-            this.state = { doc: { ...DEFAULT_DOC }, layers: [], selectedId: null };
+            this.state = emptyState();
             this.history.reset(this.snapshot());
             this.emitAll();
             toast('Your last session couldn’t be restored.', { type: 'error', duration: 6000 });
@@ -648,14 +642,9 @@ export class App {
     // ------------------------------------------------------------- document
 
     resizeDoc(width, height, label = 'Resize canvas') {
-        let w = clamp(Math.round(width), 1, MAX_SIDE);
-        let h = clamp(Math.round(height), 1, MAX_SIDE);
-        if (w * h > MAX_AREA) {
-            const s = Math.sqrt(MAX_AREA / (w * h));
-            w = Math.floor(w * s);
-            h = Math.floor(h * s);
-            toast(`Canvas limited to ${w} × ${h} to stay within browser memory limits.`);
-        }
+        // Clamp each side on its own (the other keeps its typed value), then cap the area.
+        const sides = { x: 0, y: 0, w: clamp(Math.round(width), 1, MAX_SIDE), h: clamp(Math.round(height), 1, MAX_SIDE) };
+        const { w, h } = this.limitRect(sides);
         const d = this.doc;
         if (w === d.width && h === d.height) return;
         const dx = (w - d.width) / 2;
@@ -694,7 +683,7 @@ export class App {
     /** Shrink a rect around its centre so the canvas stays within browser limits. */
     limitRect(rect) {
         let { w, h } = rect;
-        const s = Math.min(1, MAX_SIDE / w, MAX_SIDE / h, Math.sqrt(MAX_AREA / (w * h)));
+        const s = limitScale(w, h);
         if (s >= 1) return rect;
         w = Math.floor(w * s);
         h = Math.floor(h * s);
@@ -731,9 +720,7 @@ export class App {
             if (!ok) return;
         }
         if (this.crop.active) this.crop.cancel();
-        this.state.layers = [];
-        this.state.selectedId = null;
-        this.state.doc = { ...DEFAULT_DOC };
+        this.state = emptyState();
         this.renderer.prune(new Set());
         this.emitAll();
         this.requestRender();
@@ -813,7 +800,7 @@ export class App {
 
     fitTarget() {
         const box = this.fitBox();
-        const scale = clamp(this.rawFitScale(), this.minZoom(), MAX_ZOOM);
+        const scale = this.clampZoom(this.rawFitScale());
         return {
             scale,
             x: box.x + (box.w - this.doc.width * scale) / 2,
@@ -875,7 +862,7 @@ export class App {
 
     zoomTo(scale, anchor = this.visibleCenter(), { animate = false } = {}) {
         const v = this.view;
-        const s = clamp(scale, this.minZoom(), MAX_ZOOM);
+        const s = this.clampZoom(scale);
         const k = s / v.scale;
         this.setView({ scale: s, x: anchor.x - (anchor.x - v.x) * k, y: anchor.y - (anchor.y - v.y) * k }, { animate, duration: 160 });
     }

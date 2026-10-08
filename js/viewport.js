@@ -2,6 +2,7 @@
 // panning, pinch-zoom, wheel zoom and double-tap zoom.
 
 import { $, isTypingTarget } from './dom.js';
+import { alphaMask } from './images.js';
 import { layerSize, layerBounds, hitLayer, toSourcePixel, scaleFromHandle, rotateFromPointer, snapRect, clamp } from './geometry.js';
 
 const HANDLE_ANGLES = { e: 0, se: 45, s: 90, sw: 135, w: 180, nw: 225, n: 270, ne: 315 };
@@ -29,7 +30,6 @@ export class ViewportController {
         this.lastTap = null;
         this.lastRotation = null;
         this.rect = this.el.getBoundingClientRect();
-        this.hitCtx = null;
 
         this.bind();
         const update = () => this.updateBoxes();
@@ -281,15 +281,20 @@ export class ViewportController {
         }
     }
 
+    /** Clear the transient state shared by every gesture. */
+    endGesture() {
+        this.gesture = null;
+        this.el.classList.remove('is-panning', 'is-moving', 'is-transforming');
+        this.app.interacting = false;
+        this.app.ghostId = null;
+        this.app.guides = null;
+        this.hideHud();
+    }
+
     finishGesture(cancelled, p) {
         const app = this.app;
         const g = this.gesture;
-        this.gesture = null;
-        this.el.classList.remove('is-panning', 'is-moving', 'is-transforming');
-        app.interacting = false;
-        app.ghostId = null;
-        app.guides = null;
-        this.hideHud();
+        this.endGesture();
 
         if (g.type === 'pan') {
             if (!g.moved && !cancelled && g.tap) {
@@ -316,13 +321,8 @@ export class ViewportController {
     abortGesture() {
         const g = this.gesture;
         if (!g) return;
-        this.gesture = null;
+        this.endGesture();
         if (g.type !== 'pan' && g.moved) this.revert(g);
-        this.el.classList.remove('is-panning', 'is-moving', 'is-transforming');
-        this.app.interacting = false;
-        this.app.ghostId = null;
-        this.app.guides = null;
-        this.hideHud();
         this.updateBoxes();
     }
 
@@ -425,23 +425,12 @@ export class ViewportController {
 
     alphaAt(layer, d) {
         const asset = this.app.assets.get(layer.assetId);
-        if (!asset) return 255;
+        const mask = asset && alphaMask(asset);
+        if (!mask) return 255;
         const sp = toSourcePixel(layer, d.x, d.y);
-        const sx = clamp(Math.floor((sp.x * asset.proxyW) / layer.width), 0, asset.proxyW - 1);
-        const sy = clamp(Math.floor((sp.y * asset.proxyH) / layer.height), 0, asset.proxyH - 1);
-        try {
-            if (!this.hitCtx) {
-                const c = document.createElement('canvas');
-                c.width = c.height = 1;
-                this.hitCtx = c.getContext('2d', { willReadFrequently: true });
-            }
-            const x = this.hitCtx;
-            x.clearRect(0, 0, 1, 1);
-            x.drawImage(asset.proxy, sx, sy, 1, 1, 0, 0, 1, 1);
-            return x.getImageData(0, 0, 1, 1).data[3];
-        } catch {
-            return 255;
-        }
+        const mx = clamp(Math.floor((sp.x * mask.w) / layer.width), 0, mask.w - 1);
+        const my = clamp(Math.floor((sp.y * mask.h) / layer.height), 0, mask.h - 1);
+        return mask.data[my * mask.w + mx];
     }
 
     queueHover(e) {
@@ -450,11 +439,7 @@ export class ViewportController {
         this.hoverRAF = requestAnimationFrame(() => {
             this.hoverRAF = 0;
             const ev = this.hoverEvent;
-            if (!ev || this.gesture || this.app.tool !== 'move' || this.spaceDown || ev.target.closest(UI_SELECTOR)) {
-                this.hideHover();
-                return;
-            }
-            if (ev.target.closest('[data-handle]')) {
+            if (!ev || this.gesture || this.app.tool !== 'move' || this.spaceDown || ev.target.closest(`${UI_SELECTOR}, [data-handle]`)) {
                 this.hideHover();
                 return;
             }

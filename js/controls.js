@@ -1,6 +1,6 @@
 // Reusable form controls: slider rows, scrubbable number fields, segmented buttons.
 
-import { h, icon } from './dom.js';
+import { h, icon, trackPointer } from './dom.js';
 
 const decimals = (step) => {
     const s = String(step);
@@ -17,36 +17,47 @@ const snap = (v, min, max, step) => {
  * Drag horizontally on `handle` to change a value (Figma-style scrubbing).
  * Only mouse/pen — on touch the gesture would fight with scrolling.
  */
-export function attachScrub(handle, { get, set, commit, step = 1, perPixel = step }) {
+function attachScrub(handle, { get, set, commit, step = 1, perPixel = step }) {
     handle.classList.add('scrubbable');
     handle.addEventListener('pointerdown', (e) => {
         if (e.pointerType === 'touch' || e.button !== 0) return;
         const startX = e.clientX;
         const startV = get();
         let moved = false;
-        handle.setPointerCapture(e.pointerId);
-        const move = (ev) => {
-            const dx = ev.clientX - startX;
-            if (!moved && Math.abs(dx) < 3) return;
-            if (!moved) document.body.classList.add('is-scrubbing');
-            moved = true;
-            const mult = ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1;
-            set(startV + dx * perPixel * mult);
-        };
-        const up = (ev) => {
-            handle.removeEventListener('pointermove', move);
-            handle.removeEventListener('pointerup', up);
-            handle.removeEventListener('pointercancel', up);
-            document.body.classList.remove('is-scrubbing');
-            if (moved) {
-                ev.preventDefault();
-                commit();
+        trackPointer(handle, e.pointerId, {
+            move: (ev) => {
+                const dx = ev.clientX - startX;
+                if (!moved && Math.abs(dx) < 3) return;
+                if (!moved) document.body.classList.add('is-scrubbing');
+                moved = true;
+                const mult = ev.shiftKey ? 10 : ev.altKey ? 0.1 : 1;
+                set(startV + dx * perPixel * mult);
+            },
+            end: (ev) => {
+                document.body.classList.remove('is-scrubbing');
+                if (moved) {
+                    ev.preventDefault();
+                    commit();
+                }
             }
-        };
-        handle.addEventListener('pointermove', move);
-        handle.addEventListener('pointerup', up);
-        handle.addEventListener('pointercancel', up);
+        });
     });
+}
+
+/** Enter commits, Escape reverts; while not focused the field shows `display()`. */
+function bindNumberInput(input, display) {
+    const revert = () => {
+        input.value = display();
+    };
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') {
+            revert();
+            input.blur();
+        }
+    });
+    input.addEventListener('focus', () => input.select());
+    input.addEventListener('blur', revert);
 }
 
 /**
@@ -104,10 +115,12 @@ export function sliderRow({
         row.classList.toggle('changed', value !== def);
     };
     const set = (v, { silent = false } = {}) => {
-        value = snap(Number(v), min, max, step);
+        const next = snap(Number(v), min, max, step);
+        const changed = next !== value;
+        value = next;
         if (Number(range.value) !== value) range.value = String(value);
         if (document.activeElement !== num || silent) num.value = String(value);
-        paint();
+        if (changed) paint();
         return value;
     };
     const emit = (v, final) => {
@@ -150,17 +163,7 @@ export function sliderRow({
         if (Number.isFinite(parsed)) emit(parsed, true);
         num.value = String(value);
     });
-    num.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') num.blur();
-        if (e.key === 'Escape') {
-            num.value = String(value);
-            num.blur();
-        }
-    });
-    num.addEventListener('focus', () => num.select());
-    num.addEventListener('blur', () => {
-        num.value = String(value);
-    });
+    bindNumberInput(num, () => String(value));
     if (resetBtn) resetBtn.addEventListener('click', () => emit(def, true));
     labelEl.addEventListener('dblclick', () => emit(def, true));
 
@@ -173,6 +176,7 @@ export function sliderRow({
     });
 
     set(def);
+    paint();
     return {
         el: row,
         range,
@@ -207,17 +211,7 @@ export function numberField({ label, title = label, unit = '', step = 1, min = -
         if (Number.isFinite(parsed)) apply(parsed, true);
         else input.value = fmt(value);
     });
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') input.blur();
-        if (e.key === 'Escape') {
-            input.value = fmt(value);
-            input.blur();
-        }
-    });
-    input.addEventListener('focus', () => input.select());
-    input.addEventListener('blur', () => {
-        input.value = fmt(value);
-    });
+    bindNumberInput(input, () => fmt(value));
     attachScrub(tag, {
         get: () => value,
         set: (v) => apply(v, false),

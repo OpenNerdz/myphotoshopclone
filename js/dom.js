@@ -27,7 +27,7 @@ export function h(tag, attrs = {}, ...children) {
         else if (v === true) el.setAttribute(k, '');
         else el.setAttribute(k, String(v));
     }
-    for (const c of children.flat()) {
+    for (const c of children.flat(Infinity)) {
         if (c == null || c === false) continue;
         el.append(c instanceof Node ? c : document.createTextNode(String(c)));
     }
@@ -67,23 +67,22 @@ export const settings = {
     }
 };
 
-export function debounce(fn, ms) {
-    let t = 0;
-    const wrapped = (...args) => {
-        clearTimeout(t);
-        t = setTimeout(() => fn(...args), ms);
+/**
+ * Follow a pointer that went down on `el` until it is released: captures it,
+ * calls `move` for every move and `end` once on pointerup/pointercancel.
+ */
+export function trackPointer(el, pointerId, { move, end }) {
+    el.setPointerCapture(pointerId);
+    const up = (e) => {
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        end(e);
     };
-    wrapped.flush = (...args) => {
-        clearTimeout(t);
-        fn(...args);
-    };
-    wrapped.cancel = () => clearTimeout(t);
-    return wrapped;
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
 }
 
 let uidCounter = 0;
 export const uid = (prefix) => `${prefix}_${Date.now().toString(36)}${(uidCounter++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
-export const formatInt = (v) => Math.round(v).toLocaleString('en-US');
-
-export const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));

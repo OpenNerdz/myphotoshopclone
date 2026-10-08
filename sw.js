@@ -2,7 +2,7 @@
 // Strategy: network-first for same-origin GETs (always fresh when online),
 // falling back to the cache when offline or when the network stalls.
 
-const VERSION = '2.0.1';
+const VERSION = '2.0.2';
 const CACHE = `overlay-studio-${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [

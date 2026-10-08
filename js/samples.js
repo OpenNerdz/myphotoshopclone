@@ -2,6 +2,7 @@
 // editor without hunting for files.
 
 import { createCanvas } from './images.js';
+import { canvasToBlob } from './exporter.js';
 
 function mulberry32(seed) {
     return () => {
@@ -124,13 +125,11 @@ function lightLeak() {
     return c;
 }
 
-const toBlob = (canvas) => new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/png'));
-
 /** @returns {Promise<Array<{name: string, blob: Blob, overrides?: object}>>} */
 export async function createSampleBlobs() {
     const land = landscape();
     const leak = lightLeak();
-    const [a, b] = await Promise.all([toBlob(land), toBlob(leak)]);
+    const [a, b] = await Promise.all([canvasToBlob(land, 'image/png'), canvasToBlob(leak, 'image/png')]);
     land.width = 0;
     leak.width = 0;
     // Order: bottom layer first; each added layer goes on top.

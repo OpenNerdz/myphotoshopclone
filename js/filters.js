@@ -39,10 +39,6 @@ export function filterKey(f) {
     return FILTER_DEFS.map((d) => f[d.key] ?? d.def).join('|');
 }
 
-export function filtersEqual(a, b) {
-    return filterKey(a) === filterKey(b);
-}
-
 /**
  * Blur is stored relative to the image so it looks identical at any zoom level
  * and export size: `blur` units are pixels per 1000px of the image's long side.
@@ -64,22 +60,6 @@ export function cssFilter(f, blurPx = 0) {
 }
 
 // ---- Colour matrices (Filter Effects spec), 3 rows × 4 columns [r g b offset], 0..1 domain.
-
-const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
-
-function multiply(a, b) {
-    // Returns a∘b — apply b first, then a.
-    const out = new Array(12);
-    for (let row = 0; row < 3; row++) {
-        for (let col = 0; col < 4; col++) {
-            let v = 0;
-            for (let k = 0; k < 3; k++) v += a[row * 4 + k] * b[k * 4 + col];
-            if (col === 3) v += a[row * 4 + 3];
-            out[row * 4 + col] = v;
-        }
-    }
-    return out;
-}
 
 const scaleMatrix = (s, offset = 0) => [s, 0, 0, offset, 0, s, 0, offset, 0, 0, s, offset];
 
@@ -141,18 +121,6 @@ export function colorSteps(f) {
         steps.push(scaleMatrix(1 - 2 * a, a));
     }
     return steps;
-}
-
-/** All steps composed into one matrix (exact while values stay in range). */
-export function colorMatrix(f) {
-    return colorSteps(f).reduce((m, step) => multiply(step, m), IDENTITY);
-}
-
-export const isIdentityMatrix = (m) => m.every((v, i) => Math.abs(v - IDENTITY[i]) < 1e-9);
-
-/** Apply a colour matrix in place to RGBA pixel data (alpha untouched). */
-export function applyColorMatrix(data, m) {
-    applyColorSteps(data, [m]);
 }
 
 /** Apply colour matrices in sequence, clamping between steps like CSS does. */

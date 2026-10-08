@@ -796,6 +796,7 @@ body.is-resizing * {
     -webkit-backdrop-filter: blur(14px);
     backdrop-filter: blur(14px);
     animation: fade-up 0.18s var(--ease);
+    --tx: -50%;
 }
 
 .chip-row {
@@ -2283,10 +2284,6 @@ body.is-resizing * {
     }
 }
 
-.crop-bar {
-    --tx: -50%;
-}
-
 @keyframes pop-in {
     from {
         opacity: 0;
@@ -2591,6 +2588,8 @@ body.is-resizing * {
 
     .range {
         height: 32px;
+        --pa: calc(11px + (100% - 22px) * var(--a));
+        --pb: calc(11px + (100% - 22px) * var(--b));
     }
 
     .range::-webkit-slider-runnable-track {
@@ -2610,11 +2609,6 @@ body.is-resizing * {
     .range::-moz-range-thumb {
         width: 22px;
         height: 22px;
-    }
-
-    .range {
-        --pa: calc(11px + (100% - 22px) * var(--a));
-        --pb: calc(11px + (100% - 22px) * var(--b));
     }
 
     .reset-btn {

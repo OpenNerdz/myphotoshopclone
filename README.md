@@ -76,9 +76,9 @@ list, asset references, icon sprite, manifest).
 
 - Layers are positioned in **document pixels**, independent of the window size,
   so crops and exports are exact and full resolution.
-- On screen, each layer is drawn from the smallest pre-scaled copy that covers
-  its displayed size, and filtered results are cached. Panning and zooming
-  never re-run filters. When zoomed past the preview resolution, only the
+- On screen and in exports, each layer is drawn from the smallest pre-scaled
+  copy that covers its displayed size, and on-screen filtered results are
+  cached. Panning and zooming never re-run filters. When zoomed past the preview resolution, only the
   visible part of the full-resolution image is filtered.
 - Adjustments use the canvas `filter` API where available. Browsers without it
   (Safari) fall back to an equivalent colour-matrix and blur implementation that

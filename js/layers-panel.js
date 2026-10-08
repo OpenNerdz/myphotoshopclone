@@ -2,7 +2,7 @@
 // pointer-based drag reordering (works with mouse, pen and touch).
 
 import { $, h } from './dom.js';
-import { cssFilter, blendLabel, blurRadius } from './filters.js';
+import { cssFilter, blendLabel, blurRadius, filterKey } from './filters.js';
 import { clamp } from './geometry.js';
 
 export class LayersPanel {
@@ -13,6 +13,7 @@ export class LayersPanel {
         this.count = $('#layerCount');
         this.template = $('#layerRowTemplate');
         this.rows = new Map();
+        this.rowState = new WeakMap(); // row → what it currently shows
         this.drag = null;
         this.scrollRAF = 0;
         this.suppressClick = false;
@@ -68,6 +69,12 @@ export class LayersPanel {
 
     updateRow(row, layer) {
         const asset = this.app.assets.get(layer.assetId);
+        // Rows refresh on every layer change, including each pointer move while
+        // dragging on the canvas; skip the DOM work when nothing shown changed.
+        const shown = [asset && asset.thumb, layer.name, layer.blend, layer.opacity, layer.visible, layer.locked, layer.rotation, layer.flipH, layer.flipV, filterKey(layer.filters)].join('|');
+        if (this.rowState.get(row) === shown) return;
+        this.rowState.set(row, shown);
+
         const img = row.querySelector('img');
         if (asset && img.getAttribute('src') !== asset.thumb) img.src = asset.thumb;
         const filter = cssFilter(layer.filters, blurRadius(layer.filters, 44));

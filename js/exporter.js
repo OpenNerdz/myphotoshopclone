@@ -2,7 +2,8 @@
 
 import { isIdentity } from './filters.js';
 import { buildFiltered, drawLayer } from './compositor.js';
-import { createCanvas, MAX_AREA, MAX_SIDE } from './images.js';
+import { createCanvas, levelAtLeast, levelImage, MAX_AREA, MAX_SIDE } from './images.js';
+import { layerExtent } from './geometry.js';
 
 export const FORMATS = {
     'image/png': { ext: 'png', label: 'PNG', lossy: false, alpha: true },
@@ -56,22 +57,15 @@ export async function renderComposite(state, assets, { scale = 1, background = n
         const asset = assets.get(layer.assetId);
         if (!asset) continue;
 
-        // Use the proxy when it is already large enough for the output size.
-        const needed = Math.max(Math.abs(layer.width * layer.scaleX), Math.abs(layer.height * layer.scaleY)) * scale;
-        let src = asset.source;
-        let cw = asset.width;
-        let ch = asset.height;
-        if (asset.proxy !== asset.source && Math.max(asset.proxyW, asset.proxyH) >= needed) {
-            src = asset.proxy;
-            cw = asset.proxyW;
-            ch = asset.proxyH;
-        }
+        // Draw (and filter) the smallest pre-scaled level that still covers the output size.
+        const L = levelAtLeast(asset, layerExtent(layer) * scale);
+        const src = levelImage(L);
 
         if (isIdentity(layer.filters)) {
-            drawLayer(tctx, layer, src, cw, ch, 0);
+            drawLayer(tctx, layer, src, L.w, L.h, 0);
         } else {
-            const f = buildFiltered(src, cw, ch, layer.filters);
-            drawLayer(tctx, layer, f.canvas, cw, ch, f.pad);
+            const f = buildFiltered(src, L.w, L.h, layer.filters);
+            drawLayer(tctx, layer, f.canvas, L.w, L.h, f.pad);
             f.canvas.width = 0;
         }
         await yieldToBrowser();

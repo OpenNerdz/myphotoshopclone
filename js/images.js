@@ -10,9 +10,13 @@ const IS_IOS =
 export const MAX_AREA = IS_IOS ? 16_000_000 : 40_000_000;
 export const MAX_SIDE = IS_IOS ? 8192 : 16384;
 
+/** Largest scale (≤ 1) that keeps a w × h canvas within those limits. */
+export const limitScale = (w, h) => Math.min(1, MAX_SIDE / Math.max(w, h), Math.sqrt(MAX_AREA / (w * h)));
+
 /** Long-side size of the GPU-friendly preview used while editing. */
 export const PROXY_MAX = 2048;
 const THUMB_MAX = 128;
+const MASK_MIN = 512;
 const SVG_RASTER = 2048;
 
 const SUPPORTED_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico|heic|heif|jfif|pjpeg|tiff?)$/i;
@@ -132,7 +136,7 @@ export async function loadAsset(blob, name = 'Image', id = uid('a')) {
     const originalWidth = width;
     const originalHeight = height;
 
-    const cap = Math.min(1, Math.sqrt(MAX_AREA / (width * height)), MAX_SIDE / Math.max(width, height));
+    const cap = limitScale(width, height);
     if (cap < 1) {
         const tw = Math.max(1, Math.floor(width * cap));
         const th = Math.max(1, Math.floor(height * cap));
@@ -197,9 +201,47 @@ export function assetLevels(asset) {
     return asset.levels;
 }
 
+/** Smallest level whose long side is at least `px` (the full image if none is). */
+export function levelAtLeast(asset, px) {
+    const levels = assetLevels(asset);
+    for (let i = levels.length - 1; i > 0; i--) {
+        if (Math.max(levels[i].w, levels[i].h) >= px) return levels[i];
+    }
+    return levels[0];
+}
+
 export function levelImage(level) {
     if (!level.img) level.img = downscale(levelImage(level.from), level.from.w, level.from.h, level.w, level.h);
     return level.img;
+}
+
+/**
+ * Alpha channel of a ≥ 512px level, read back once and kept for hit testing
+ * (reading single pixels from a GPU canvas on every pointer move is slow).
+ * @returns {{w: number, h: number, data: Uint8Array} | null} null when opaque
+ */
+export function alphaMask(asset) {
+    if (asset.mask !== undefined) return asset.mask;
+    asset.mask = null;
+    const L = levelAtLeast(asset, MASK_MIN);
+    const c = createCanvas(L.w, L.h);
+    try {
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(levelImage(L), 0, 0);
+        const rgba = ctx.getImageData(0, 0, c.width, c.height).data;
+        const data = new Uint8Array(c.width * c.height);
+        let opaque = true;
+        for (let i = 0; i < data.length; i++) {
+            data[i] = rgba[i * 4 + 3];
+            if (data[i] !== 255) opaque = false;
+        }
+        if (!opaque) asset.mask = { w: c.width, h: c.height, data };
+    } catch {
+        /* unreadable pixels: treat the image as opaque */
+    } finally {
+        c.width = 0;
+    }
+    return asset.mask;
 }
 
 export function releaseAsset(asset) {
