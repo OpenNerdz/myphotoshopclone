@@ -23,7 +23,8 @@ const DEFAULT_DOC = { width: 1920, height: 1080, background: null, auto: true };
 const cloneLayer = (l) => ({ ...l, filters: { ...l.filters } });
 const finite = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 
-function sanitizeDoc(d = {}) {
+function sanitizeDoc(d) {
+    d = d && typeof d === 'object' ? d : {};
     return {
         width: clamp(Math.round(finite(d.width, DEFAULT_DOC.width)), 1, MAX_SIDE),
         height: clamp(Math.round(finite(d.height, DEFAULT_DOC.height)), 1, MAX_SIDE),
@@ -73,6 +74,10 @@ export class App {
         this.savedAssetIds = new Set();
         this.persistEnabled = true;
         this.persistWarned = false;
+        // Only one tab autosaves at a time (see acquireAutosaveLock).
+        this.isWriter = !(navigator.locks && navigator.locks.request);
+        this.restoring = false;
+        this.ready = Promise.resolve();
     }
 
     // ---------------------------------------------------------------- events
@@ -80,6 +85,11 @@ export class App {
     on(event, fn) {
         if (!this.listeners.has(event)) this.listeners.set(event, new Set());
         this.listeners.get(event).add(fn);
+    }
+
+    off(event, fn) {
+        const set = this.listeners.get(event);
+        if (set) set.delete(fn);
     }
 
     emit(event, data) {
@@ -103,7 +113,9 @@ export class App {
         this.exportDialog = new ExportDialog(this);
         this.history.reset(this.snapshot());
         this.emitAll();
-        await this.restoreSession();
+        this.acquireAutosaveLock();
+        this.ready = this.restoreSession();
+        await this.ready;
         document.documentElement.classList.add('app-ready');
 
         const flush = () => {
@@ -169,6 +181,28 @@ export class App {
         };
     }
 
+    /** Toast with an Undo button that only undoes the change it announced. */
+    undoToast(message) {
+        const entry = this.history.present;
+        let handle = null;
+        const onHistory = () => {
+            if (this.history.present !== entry) {
+                this.off('history', onHistory);
+                if (handle) handle.close();
+            }
+        };
+        handle = toast(message, {
+            action: {
+                label: 'Undo',
+                run: () => {
+                    this.off('history', onHistory);
+                    if (this.history.present === entry) this.undo();
+                }
+            }
+        });
+        this.on('history', onHistory);
+    }
+
     commit(label, key = null) {
         this.history.push(this.snapshot(), { label, key });
         this.gcAssets();
@@ -202,6 +236,8 @@ export class App {
             this.crop.cancel();
             return;
         }
+        // Finishing a drag after undo would commit it and wipe the redo stack.
+        this.viewport.abortGesture();
         const r = this.history.undo();
         if (!r) return;
         this.applySnapshot(r.state);
@@ -212,6 +248,7 @@ export class App {
 
     redo() {
         if (this.crop.active) return;
+        this.viewport.abortGesture();
         const r = this.history.redo();
         if (!r) return;
         this.applySnapshot(r.state);
@@ -235,8 +272,36 @@ export class App {
 
     // ------------------------------------------------------------- autosave
 
+    /**
+     * Two tabs saving the same project would delete each other's images, so
+     * only the tab holding this lock writes. Others take over when it closes.
+     */
+    acquireAutosaveLock() {
+        if (this.isWriter) return;
+        const hold = () => new Promise(() => {}); // held until the tab closes
+        navigator.locks
+            .request('image-overlay-studio:autosave', { ifAvailable: true }, (lock) => {
+                if (lock) {
+                    this.isWriter = true;
+                    this.schedulePersist();
+                    return hold();
+                }
+                toast('Overlay Studio is open in another tab. Autosave is paused here until that tab closes.', { duration: 8000 });
+                navigator.locks.request('image-overlay-studio:autosave', () => {
+                    this.isWriter = true;
+                    this.schedulePersist();
+                    toast('Autosave resumed in this tab.', { type: 'success' });
+                    return hold();
+                });
+                return undefined;
+            })
+            .catch(() => {
+                this.isWriter = true;
+            });
+    }
+
     schedulePersist() {
-        if (!this.persistEnabled) return;
+        if (!this.persistEnabled || !this.isWriter || this.restoring) return;
         clearTimeout(this.persistTimer);
         this.persistTimer = setTimeout(() => {
             this.persistTimer = 0;
@@ -245,7 +310,8 @@ export class App {
     }
 
     async persistNow() {
-        if (!this.persistEnabled) return;
+        await this.ready; // never save over a session that hasn't been restored yet
+        if (!this.persistEnabled || !this.isWriter || this.restoring) return;
         const snap = this.snapshot();
         try {
             if (!snap.layers.length) {
@@ -255,8 +321,12 @@ export class App {
             }
             const keep = new Set(snap.layers.map((l) => l.assetId));
             const pending = [...keep].filter((id) => !this.savedAssetIds.has(id)).map((id) => this.assets.get(id)).filter(Boolean);
-            await storage.saveProject({ version: 2, savedAt: Date.now(), ...snap }, pending, keep);
+            // `lookup` lets storage re-save images that disappeared from the
+            // database (e.g. cleared by another tab or the browser).
+            const lookup = (id) => this.assets.get(id);
+            const repaired = await storage.saveProject({ version: 2, savedAt: Date.now(), ...snap }, pending, keep, lookup);
             for (const a of pending) this.savedAssetIds.add(a.id);
+            for (const id of repaired) this.savedAssetIds.add(id);
             for (const id of [...this.savedAssetIds]) if (!keep.has(id)) this.savedAssetIds.delete(id);
         } catch (err) {
             console.warn('Autosave failed', err);
@@ -268,47 +338,59 @@ export class App {
     }
 
     async restoreSession() {
-        let saved = null;
+        this.restoring = true;
         try {
-            saved = await storage.loadProject();
-        } catch {
-            return; // IndexedDB unavailable (e.g. some private modes) — autosave will warn on first save.
-        }
-        const savedLayers = saved && Array.isArray(saved.project.layers) ? saved.project.layers : [];
-        if (!savedLayers.length) return;
-
-        this.setBusy(true, 'Restoring your last session…');
-        const ids = [...new Set(savedLayers.map((l) => l.assetId))];
-        const results = await mapLimit(ids, 3, async (id) => {
-            const rec = saved.assets.get(id);
-            if (!rec || !rec.blob) throw new Error('Missing image data');
-            return loadAsset(rec.blob, rec.name, id);
-        });
-        for (const r of results) {
-            if (r.ok) {
-                this.assets.set(r.value.id, r.value);
-                this.savedAssetIds.add(r.value.id);
+            let saved = null;
+            try {
+                saved = await storage.loadProject();
+            } catch {
+                return; // IndexedDB unavailable (e.g. some private modes) — autosave will warn on first save.
             }
-        }
-        const layers = savedLayers.filter((l) => this.assets.has(l.assetId)).map((l) => sanitizeLayer(l, this.assets.get(l.assetId)));
-        this.state = {
-            doc: sanitizeDoc(saved.project.doc),
-            layers,
-            selectedId: layers.some((l) => l.id === saved.project.selectedId) ? saved.project.selectedId : null
-        };
-        this.history.reset(this.snapshot());
-        this.setBusy(false);
-        this.emitAll();
-        this.fitView({ animate: false });
+            const savedLayers =
+                saved && saved.project && Array.isArray(saved.project.layers) ? saved.project.layers.filter((l) => l && typeof l === 'object') : [];
+            if (!savedLayers.length) return;
 
-        if (layers.length) {
-            toast('Restored your previous session', {
-                type: 'success',
-                duration: 6000,
-                action: { label: 'Start new', run: () => this.clearAll({ confirm: false }) }
+            this.setBusy(true, 'Restoring your last session…');
+            const ids = [...new Set(savedLayers.map((l) => l.assetId))];
+            const results = await mapLimit(ids, 3, async (id) => {
+                const rec = saved.assets.get(id);
+                if (!rec || !rec.blob) throw new Error('Missing image data');
+                return loadAsset(rec.blob, rec.name, id);
             });
+            for (const r of results) {
+                if (r.ok) {
+                    this.assets.set(r.value.id, r.value);
+                    this.savedAssetIds.add(r.value.id);
+                }
+            }
+            const layers = savedLayers.filter((l) => this.assets.has(l.assetId)).map((l) => sanitizeLayer(l, this.assets.get(l.assetId)));
+            this.state = {
+                doc: sanitizeDoc(saved.project.doc),
+                layers,
+                selectedId: layers.some((l) => l.id === saved.project.selectedId) ? saved.project.selectedId : null
+            };
+            this.history.reset(this.snapshot());
+            this.emitAll();
+            this.fitView({ animate: false });
+
+            if (layers.length) {
+                toast('Restored your previous session', {
+                    type: 'success',
+                    duration: 6000,
+                    action: { label: 'Start new', run: () => this.clearAll({ confirm: false }) }
+                });
+            }
+            if (layers.length < savedLayers.length) toast('Some images from your last session could not be restored.', { type: 'error' });
+        } catch (err) {
+            console.error('Restore failed', err);
+            this.state = { doc: { ...DEFAULT_DOC }, layers: [], selectedId: null };
+            this.history.reset(this.snapshot());
+            this.emitAll();
+            toast('Your last session couldn’t be restored.', { type: 'error', duration: 6000 });
+        } finally {
+            this.restoring = false;
+            this.setBusy(false);
         }
-        if (layers.length < savedLayers.length) toast('Some images from your last session could not be restored.', { type: 'error' });
     }
 
     // --------------------------------------------------------------- adding
@@ -323,6 +405,7 @@ export class App {
         const slow = files.length > 1 || files.some((f) => f.size > 3_000_000);
         const progress = slow ? toast(files.length > 1 ? `Adding ${files.length} images…` : 'Adding image…', { spinner: true, duration: 0 }) : null;
         const results = await mapLimit(files, 3, (f) => loadAsset(f, f.name || 'Pasted image'));
+        await this.ready; // never insert into a session that is still being restored
         progress && progress.close();
 
         const assets = results.filter((r) => r.ok).map((r) => r.value);
@@ -391,6 +474,7 @@ export class App {
             const { createSampleBlobs } = await import('./samples.js');
             const samples = await createSampleBlobs();
             const assets = await Promise.all(samples.map((s) => loadAsset(s.blob, s.name)));
+            await this.ready;
             this.addAssets(assets, 'Add sample images', samples.map((s) => s.overrides || {}));
             this.announce('Sample images added');
         } catch (err) {
@@ -449,7 +533,7 @@ export class App {
         this.emit('selection');
         this.requestRender();
         this.commit('Delete layer');
-        if (notify) toast(`Deleted “${removed.name}”`, { action: { label: 'Undo', run: () => this.undo() } });
+        if (notify) this.undoToast(`Deleted “${removed.name}”`);
     }
 
     duplicateLayer(id) {
@@ -594,7 +678,7 @@ export class App {
 
     /** Crop the canvas to a document-space rect. Layers keep their pixels. */
     cropTo(rect, label = 'Crop') {
-        const r = roundRect(rect);
+        const r = roundRect(this.limitRect(rect));
         const d = this.doc;
         if (r.x === 0 && r.y === 0 && r.w === d.width && r.h === d.height) return false;
         for (const l of this.state.layers) {
@@ -605,6 +689,17 @@ export class App {
         this.afterDocChange();
         this.commit(label);
         return true;
+    }
+
+    /** Shrink a rect around its centre so the canvas stays within browser limits. */
+    limitRect(rect) {
+        let { w, h } = rect;
+        const s = Math.min(1, MAX_SIDE / w, MAX_SIDE / h, Math.sqrt(MAX_AREA / (w * h)));
+        if (s >= 1) return rect;
+        w = Math.floor(w * s);
+        h = Math.floor(h * s);
+        toast(`Canvas limited to ${w} × ${h} px to stay within browser memory limits.`);
+        return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
     }
 
     visibleBounds() {
@@ -643,7 +738,7 @@ export class App {
         this.emitAll();
         this.requestRender();
         this.commit('Clear canvas');
-        toast('Canvas cleared', { action: { label: 'Undo', run: () => this.undo() } });
+        this.undoToast('Canvas cleared');
     }
 
     // ----------------------------------------------------------------- tools

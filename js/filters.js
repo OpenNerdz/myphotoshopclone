@@ -18,7 +18,8 @@ const DEFAULTS = Object.freeze(Object.fromEntries(FILTER_DEFS.map((d) => [d.key,
 export const defaultFilters = () => ({ ...DEFAULTS });
 
 /** Fill in missing keys and clamp values into their valid ranges. */
-export function normalizeFilters(f = {}) {
+export function normalizeFilters(f) {
+    f = f && typeof f === 'object' ? f : {};
     const out = {};
     for (const d of FILTER_DEFS) {
         const v = Number(f[d.key]);

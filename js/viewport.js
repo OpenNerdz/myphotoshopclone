@@ -113,7 +113,8 @@ export class ViewportController {
         } catch {
             /* capture can fail for synthetic events */
         }
-        if (isTypingTarget(document.activeElement)) document.activeElement.blur();
+        // Focus the canvas so arrow keys nudge the selection (and any field commits).
+        if (document.activeElement !== this.el) this.el.focus({ preventScroll: true });
 
         if (this.pointers.size === 2) {
             this.abortGesture();
@@ -138,7 +139,7 @@ export class ViewportController {
         const hit = this.hitTest(p);
         if (hit) {
             app.select(hit.id);
-            this.gesture = { type: 'move', id: hit.id, pointerId: e.pointerId, touch: e.pointerType === 'touch', p0: p, start: { x: hit.x, y: hit.y }, moved: false, targets: null };
+            this.gesture = { type: 'move', id: hit.id, pointerId: e.pointerId, touch: e.pointerType === 'touch', p0: p, start: { x: hit.x, y: hit.y, scaleX: hit.scaleX, scaleY: hit.scaleY, rotation: hit.rotation }, moved: false, targets: null };
         } else {
             this.startPan(p, e.pointerId, { tap: true, deselect: true });
         }
@@ -167,7 +168,8 @@ export class ViewportController {
             /* already released */
         }
         if (this.pinch) {
-            if (this.pointers.size < 2) {
+            // End the pinch as soon as either of its two fingers lifts.
+            if (this.pinch.ids.includes(e.pointerId) || this.pointers.size < 2) {
                 this.pinch = null;
                 this.app.interacting = false;
                 this.app.requestRender();
@@ -310,15 +312,18 @@ export class ViewportController {
         this.app.updateLayer(g.id, { x: s.x, y: s.y, scaleX: s.scaleX, scaleY: s.scaleY, rotation: s.rotation });
     }
 
+    /** Cancel the current gesture, restoring the layer it was changing. */
     abortGesture() {
         const g = this.gesture;
         if (!g) return;
         this.gesture = null;
         if (g.type !== 'pan' && g.moved) this.revert(g);
         this.el.classList.remove('is-panning', 'is-moving', 'is-transforming');
+        this.app.interacting = false;
         this.app.ghostId = null;
         this.app.guides = null;
         this.hideHud();
+        this.updateBoxes();
     }
 
     /** Double-tap on empty canvas toggles between fit and a closer zoom. */
@@ -339,17 +344,36 @@ export class ViewportController {
     }
 
     startPinch() {
-        const [a, b] = [...this.pointers.values()];
+        const ids = [...this.pointers.keys()].slice(0, 2);
+        const [a, b] = ids.map((id) => this.pointers.get(id));
         const v = this.app.view;
-        this.pinch = { d0: Math.max(1, dist(a, b)), c0: mid(a, b), scale0: v.scale, x0: v.x, y0: v.y };
+        this.pinch = { ids, d0: Math.max(1, dist(a, b)), c0: mid(a, b), scale0: v.scale, x0: v.x, y0: v.y };
         this.app.interacting = true;
         this.box.hidden = true;
     }
 
+    /** Take over two pointers that started on another element (e.g. the crop box). */
+    adoptPinch(first, second) {
+        this.rect = this.el.getBoundingClientRect();
+        this.abortGesture();
+        this.pointers.clear();
+        for (const p of [first, second]) {
+            this.pointers.set(p.id, { x: p.x - this.rect.left, y: p.y - this.rect.top });
+            try {
+                this.el.setPointerCapture(p.id);
+            } catch {
+                /* pointer already released */
+            }
+        }
+        this.startPinch();
+    }
+
     updatePinch() {
         const app = this.app;
-        const [a, b] = [...this.pointers.values()];
         const pz = this.pinch;
+        const a = this.pointers.get(pz.ids[0]);
+        const b = this.pointers.get(pz.ids[1]);
+        if (!a || !b) return;
         const c = mid(a, b);
         const s = app.clampZoom((pz.scale0 * dist(a, b)) / pz.d0);
         const docX = (pz.c0.x - pz.x0) / pz.scale0;

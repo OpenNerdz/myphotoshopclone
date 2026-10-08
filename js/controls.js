@@ -126,10 +126,21 @@ export function sliderRow({
     });
     range.addEventListener('pointerdown', () => {
         onStart && onStart();
+        const startValue = value;
+        let changed = false;
+        const onChange = () => {
+            changed = true;
+        };
+        range.addEventListener('change', onChange);
         const end = () => {
             window.removeEventListener('pointerup', end, true);
             window.removeEventListener('pointercancel', end, true);
             onEnd && onEnd();
+            // A drag the browser cancels (e.g. to scroll) never fires `change`.
+            setTimeout(() => {
+                range.removeEventListener('change', onChange);
+                if (!changed && value !== startValue && onCommit) onCommit(value);
+            }, 0);
         };
         window.addEventListener('pointerup', end, true);
         window.addEventListener('pointercancel', end, true);

@@ -95,15 +95,35 @@ export class CropController {
         if (!this.active || (e.pointerType === 'mouse' && e.button !== 0)) return;
         e.preventDefault();
         e.stopPropagation();
+        if (this.drag && e.pointerId !== this.drag.id) {
+            // A second finger: undo the partial drag and pinch-zoom instead.
+            const first = { id: this.drag.id, x: this.drag.lastX, y: this.drag.lastY };
+            this.rect = this.drag.start;
+            this.drag = null;
+            this.box.classList.remove('dragging');
+            this.place();
+            this.app.viewport.adoptPinch(first, { id: e.pointerId, x: e.clientX, y: e.clientY });
+            return;
+        }
         const h = e.target.closest('[data-crop]');
         this.box.setPointerCapture(e.pointerId);
-        this.drag = { id: e.pointerId, handle: h ? h.dataset.crop : 'move', x0: e.clientX, y0: e.clientY, start: { ...this.rect } };
+        this.drag = {
+            id: e.pointerId,
+            handle: h ? h.dataset.crop : 'move',
+            x0: e.clientX,
+            y0: e.clientY,
+            lastX: e.clientX,
+            lastY: e.clientY,
+            start: { ...this.rect }
+        };
         this.box.classList.add('dragging');
     }
 
     onMove(e) {
         const d = this.drag;
         if (!d || e.pointerId !== d.id) return;
+        d.lastX = e.clientX;
+        d.lastY = e.clientY;
         const s = this.app.view.scale;
         const dx = (e.clientX - d.x0) / s;
         const dy = (e.clientY - d.y0) / s;

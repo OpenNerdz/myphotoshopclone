@@ -47,17 +47,31 @@ const request = (req) =>
 
 /**
  * Persist the project. `assets` lists records ({id, name, blob}) that are not
- * stored yet; anything not in `keepIds` is deleted.
+ * stored yet; anything not in `keepIds` is deleted. Images in `keepIds` that are
+ * missing from the database (e.g. removed by another tab) are re-saved using
+ * `lookup(id)`. Resolves with the ids that had to be repaired.
  */
-export async function saveProject(project, assets, keepIds) {
+export async function saveProject(project, assets, keepIds, lookup = () => null) {
     const db = await openDB();
     const tx = db.transaction([ASSETS, META], 'readwrite');
     const store = tx.objectStore(ASSETS);
-    for (const a of assets) store.put({ id: a.id, name: a.name, blob: a.blob });
+    const put = (a) => store.put({ id: a.id, name: a.name, blob: a.blob });
+    for (const a of assets) put(a);
     tx.objectStore(META).put(project, PROJECT_KEY);
-    const keys = await request(store.getAllKeys());
-    for (const key of keys) if (!keepIds.has(key)) store.delete(key);
+    const stored = new Set(await request(store.getAllKeys()));
+    const queued = new Set(assets.map((a) => a.id));
+    const repaired = [];
+    for (const id of keepIds) {
+        if (stored.has(id) || queued.has(id)) continue;
+        const a = lookup(id);
+        if (a && a.blob) {
+            put(a);
+            repaired.push(id);
+        }
+    }
+    for (const key of stored) if (!keepIds.has(key)) store.delete(key);
     await done(tx);
+    return repaired;
 }
 
 /** @returns {Promise<{project: object, assets: Map<string, {id, name, blob}>} | null>} */

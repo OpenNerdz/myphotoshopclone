@@ -31,6 +31,7 @@ export class Renderer {
         this.cssW = 0;
         this.cssH = 0;
         this.caches = new Map();
+        this.fallbacks = new Map();
         this.raf = 0;
         this.pattern = null;
         this.patternDpr = 0;
@@ -65,13 +66,16 @@ export class Renderer {
     }
 
     drop(id) {
-        const c = this.caches.get(id);
-        if (c) c.img.width = 0;
-        this.caches.delete(id);
+        for (const map of [this.caches, this.fallbacks]) {
+            const c = map.get(id);
+            if (c) c.img.width = 0;
+            map.delete(id);
+        }
     }
 
     prune(validIds) {
-        for (const id of [...this.caches.keys()]) if (!validIds.has(id)) this.drop(id);
+        const ids = new Set([...this.caches.keys(), ...this.fallbacks.keys()]);
+        for (const id of ids) if (!validIds.has(id)) this.drop(id);
     }
 
     checker() {
@@ -131,6 +135,7 @@ export class Renderer {
         let li = this.levelFor(levels, need);
 
         if (isIdentity(layer.filters)) {
+            if (this.caches.has(layer.id) || this.fallbacks.has(layer.id)) this.drop(layer.id); // free memory
             const L = levels[li];
             return { img: levelImage(L), cw: L.w, ch: L.h, pad: 0, region: null };
         }
@@ -142,6 +147,8 @@ export class Renderer {
         // Moving things around: keep showing what we have, upgrade afterwards.
         if (settling && cached && cached.fk === fk && cached.assetId === asset.id) {
             if (cached.li !== li || li === 0) this.degraded = true;
+            // A full-res tile that no longer covers the view would leave holes.
+            if (cached.region && !this.tileCovers(cached, layer)) return this.preview(layer, asset, fk);
             return cached;
         }
         // Dragging an adjustment slider: build a cheaper level for snappy feedback.
@@ -165,7 +172,33 @@ export class Renderer {
         if (cached && cached.img !== built.canvas) cached.img.width = 0;
         const entry = { fk, li, assetId: asset.id, img: built.canvas, cw: L.w, ch: L.h, pad: built.pad, region: null };
         this.caches.set(layer.id, entry);
+        const fb = this.fallbacks.get(layer.id);
+        if (fb) {
+            fb.img.width = 0;
+            this.fallbacks.delete(layer.id);
+        }
         return entry;
+    }
+
+    tileCovers(tile, layer) {
+        const vis = this.visibleSourceRect(layer);
+        if (!vis) return true;
+        const r = tile.region;
+        return vis.x >= r.x && vis.y >= r.y && vis.x + vis.w <= r.x + r.w && vis.y + vis.h <= r.y + r.h;
+    }
+
+    /** Filtered 2048px preview, kept alongside a tile to cover fast pans. */
+    preview(layer, asset, fk) {
+        const levels = assetLevels(asset);
+        const L = levels[Math.min(1, levels.length - 1)];
+        let p = this.fallbacks.get(layer.id);
+        if (!p || p.fk !== fk || p.assetId !== asset.id) {
+            const built = buildFiltered(levelImage(L), L.w, L.h, layer.filters, p ? p.img : null);
+            if (p && p.img !== built.canvas) p.img.width = 0;
+            p = { fk, li: 1, assetId: asset.id, img: built.canvas, cw: L.w, ch: L.h, pad: built.pad, region: null };
+            this.fallbacks.set(layer.id, p);
+        }
+        return p;
     }
 
     /** Filter only the visible part of the full-resolution image. */

@@ -2,12 +2,11 @@
 // Strategy: network-first for same-origin GETs (always fresh when online),
 // falling back to the cache when offline or when the network stalls.
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
 const CACHE = `overlay-studio-${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = [
-    './',
-    'index.html',
+    './', // not 'index.html': Netlify may redirect it, and redirects can't answer navigations
     'styles.css',
     'manifest.webmanifest',
     'icons/icon.svg',
@@ -80,7 +79,7 @@ self.addEventListener('fetch', (event) => {
             } catch {
                 if (cached) return cached;
                 if (request.mode === 'navigate') {
-                    const shell = await cache.match('index.html');
+                    const shell = await cache.match('./');
                     if (shell) return shell;
                 }
                 return Response.error();

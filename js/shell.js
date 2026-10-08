@@ -17,6 +17,7 @@ export class Shell {
         this.panel = $('#panel');
         this.fileInput = $('#fileInput');
         this.phoneQuery = window.matchMedia('(max-width: 767px)');
+        this.sideSheetQuery = window.matchMedia('(max-width: 767px) and (orientation: landscape)');
         this.isPhone = this.phoneQuery.matches;
         this.tab = null;
         this.dragDepth = 0;
@@ -299,11 +300,10 @@ export class Shell {
                     return run(() => app.zoomStep(1));
                 case '-':
                     return run(() => app.zoomStep(-1));
-                case ']':
-                    return run(() => sel && (e.shiftKey ? app.moveLayer(sel.id, 0) : app.moveLayerBy(sel.id, -1)));
-                case '[':
-                    return run(() => sel && (e.shiftKey ? app.moveLayer(sel.id, app.layers.length - 1) : app.moveLayerBy(sel.id, 1)));
             }
+            // Match brackets by physical key: with Shift held, e.key is } or {.
+            if (e.code === 'BracketRight') return run(() => sel && (e.shiftKey ? app.moveLayer(sel.id, 0) : app.moveLayerBy(sel.id, -1)));
+            if (e.code === 'BracketLeft') return run(() => sel && (e.shiftKey ? app.moveLayer(sel.id, app.layers.length - 1) : app.moveLayerBy(sel.id, 1)));
             return;
         }
         if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -311,12 +311,13 @@ export class Shell {
         const cropping = app.tool === 'crop';
         switch (key) {
             case 'Escape':
+                if (typing) return; // fields handle Escape themselves
                 if (cropping) app.crop.cancel();
                 else if (this.isPhone && this.tab) this.closeSheet();
                 else app.select(null);
                 return;
             case 'Enter':
-                if (cropping && target.id !== 'cropCancel') {
+                if (cropping && !typing && target.id !== 'cropCancel') {
                     e.preventDefault();
                     app.crop.apply();
                 }
@@ -456,6 +457,7 @@ export class Shell {
             this.updateInsets();
         };
         this.phoneQuery.addEventListener('change', onQuery);
+        this.sideSheetQuery.addEventListener('change', () => this.updateInsets());
         onQuery();
 
         // Keep the canvas framed above the sheet as it resizes.
@@ -531,7 +533,12 @@ export class Shell {
         const insets = { top: 0, right: 0, bottom: 0, left: 0 };
         // Keep the fitted canvas clear of the floating zoom pill on phones.
         if (this.isPhone) insets.top = 36;
-        if (this.isPhone && this.tab) insets.bottom = Math.round(this.panel.getBoundingClientRect().height);
+        if (this.isPhone && this.tab) {
+            // Landscape phones show the sheet as a side panel so the canvas stays visible.
+            const r = this.panel.getBoundingClientRect();
+            if (this.sideSheetQuery.matches) insets.right = Math.round(r.width);
+            else insets.bottom = Math.round(r.height);
+        }
         const bar = $('#cropBar');
         if (this.app.tool === 'crop' && !bar.hidden) {
             const h = bar.getBoundingClientRect().height + 16;
