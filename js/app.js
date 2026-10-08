@@ -15,7 +15,6 @@ import { LayersPanel } from './layers-panel.js';
 import { PropertiesPanel } from './properties.js';
 import { ExportDialog, confirmDialog } from './dialogs.js';
 import { Shell } from './shell.js';
-import { createSampleBlobs } from './samples.js';
 
 export const MAX_ZOOM = 32;
 const ZOOM_STEPS = [0.02, 0.03, 0.05, 0.0625, 0.0833, 0.125, 0.1667, 0.25, 0.3333, 0.5, 0.6667, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32];
@@ -389,6 +388,7 @@ export class App {
     async loadSamples() {
         this.setBusy(true, 'Creating sample images…');
         try {
+            const { createSampleBlobs } = await import('./samples.js');
             const samples = await createSampleBlobs();
             const assets = await Promise.all(samples.map((s) => loadAsset(s.blob, s.name)));
             this.addAssets(assets, 'Add sample images', samples.map((s) => s.overrides || {}));
